@@ -76,6 +76,13 @@ func (f *FindBarWidget) barLayout() (barX, barY, barW, barH int) {
 
 func (f *FindBarWidget) Focusable() bool { return true }
 
+func (f *FindBarWidget) FocusedInput() *InputWidget {
+	if f.focused {
+		return f.Input
+	}
+	return nil
+}
+
 func (f *FindBarWidget) Focus() {
 	f.focused = true
 }

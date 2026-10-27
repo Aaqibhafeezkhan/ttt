@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eugenioenko/ttt/internal/core/clipboard"
 	"github.com/eugenioenko/ttt/internal/term"
 	"github.com/gdamore/tcell/v3"
 )
@@ -43,6 +44,36 @@ func TestBracketedPasteSimple(t *testing.T) {
 	}
 	if buf.Lines[0] != "hi" {
 		t.Errorf("expected 'hi', got %q", buf.Lines[0])
+	}
+}
+
+func TestBracketedPasteIntoFindBar(t *testing.T) {
+	h := newTestHarness(t, 80, 24)
+	defer h.stop()
+	h.exec("file.new")
+	h.exec("search.find")
+	bar := findBarWidget(t, h)
+
+	pasteText(h, pasteKeys("https://github.com/eugenioenko/ttt"))
+	if got := bar.Input.Text; got != "https://github.com/eugenioenko/ttt" {
+		t.Fatalf("find input = %q", got)
+	}
+	if got := h.app.EditorGroup.ActiveBuffer().Lines[0]; got != "" {
+		t.Fatalf("paste leaked into editor: %q", got)
+	}
+	clipboard.Set("-clipboard")
+	h.exec("editor.paste")
+	if got := bar.Input.Text; got != "https://github.com/eugenioenko/ttt-clipboard" {
+		t.Fatalf("find input after clipboard command = %q", got)
+	}
+	if got := h.app.EditorGroup.ActiveBuffer().Lines[0]; got != "" {
+		t.Fatalf("clipboard command leaked into editor: %q", got)
+	}
+
+	h.click(5, 3)
+	h.app.PasteText("XYZ")
+	if got := h.app.EditorGroup.ActiveBuffer().Lines[0]; got != "XYZ" {
+		t.Fatalf("editor paste after click = %q", got)
 	}
 }
 

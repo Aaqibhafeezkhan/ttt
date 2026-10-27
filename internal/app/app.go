@@ -923,6 +923,12 @@ func (a *App) Cut() {
 }
 
 func (a *App) Paste() {
+	if holder, ok := a.Root.TopOverlayWidget().(ui.InputHolder); ok {
+		if inp := holder.FocusedInput(); inp != nil {
+			inp.PasteClipboard()
+			return
+		}
+	}
 	if tw := a.focusedTerminalWidget(); tw != nil {
 		text := clipboard.Get()
 		if text != "" {
@@ -972,6 +978,12 @@ func (a *App) focusedWidgetInput() *widgets.InputWidget {
 }
 
 func (a *App) PasteText(text string) {
+	if holder, ok := a.Root.TopOverlayWidget().(ui.InputHolder); ok {
+		if inp := holder.FocusedInput(); inp != nil {
+			inp.PasteText(text)
+			return
+		}
+	}
 	if tw := a.focusedTerminalWidget(); tw != nil && tw.WantsRawKeys() {
 		tw.PasteText(text)
 		return
