@@ -316,6 +316,36 @@ func (e *PluginEditorAPI) ClearSearch() {
 	e.eg.ClearSearch()
 }
 
+func (e *PluginEditorAPI) DiffHunks() []plugin.DiffHunkTarget {
+	hunks, _, goTo := activeDiffHunks(e.eg)
+	if goTo == nil {
+		return nil
+	}
+	// An active diff with no change blocks returns an empty slice, not nil,
+	// so a plugin can tell "no diff here" from "a diff with no changes".
+	out := make([]plugin.DiffHunkTarget, len(hunks))
+	for i, h := range hunks {
+		out[i] = plugin.DiffHunkTarget{FilePath: h.FilePath, Kind: string(h.Kind)}
+	}
+	return out
+}
+
+func (e *PluginEditorAPI) DiffHunkAt() int {
+	_, at, _ := activeDiffHunks(e.eg)
+	return at
+}
+
+func (e *PluginEditorAPI) GoToDiffHunk(index int) error {
+	hunks, _, goTo := activeDiffHunks(e.eg)
+	if goTo == nil {
+		return fmt.Errorf("the active tab is not a diff")
+	}
+	if index < 1 || index > len(hunks) {
+		return fmt.Errorf("hunk %d out of range (1-%d)", index, len(hunks))
+	}
+	return goTo(index)
+}
+
 // PluginFilesystemAPI implements plugin.FilesystemAPI with path restrictions.
 type PluginFilesystemAPI struct {
 	read    fsRoots

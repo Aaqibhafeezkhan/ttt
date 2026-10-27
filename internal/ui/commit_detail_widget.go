@@ -210,6 +210,14 @@ type CommitDetailWidget struct {
 	primaryPressed    bool
 	disclosurePressed bool
 	capturedFile      int
+	// navFile and navRow hold the position navigation last moved to. They are
+	// the answer to "where am I" only while the viewport has not moved since:
+	// the viewport alone cannot answer when the diff is shorter than the view,
+	// because TopLine stays 0 then. Any scroll clears navValid so the visible
+	// position wins again.
+	navFile  int
+	navRow   int
+	navValid bool
 
 	OnFetchContext func(fileIndex int, file CommitDetailFile)
 	OnClose        func()
@@ -228,6 +236,7 @@ func NewCommitDetailWidget(dir, ref, short string, syntaxHighlight bool) *Commit
 		signsColor:       true,
 		gutterHighlight:  true,
 		capturedFile:     -1,
+		navFile:          -1,
 		markdownMaxWidth: 80,
 	}
 }
@@ -707,6 +716,7 @@ func (d *CommitDetailWidget) rebuildRows() {
 }
 
 func (d *CommitDetailWidget) buildRows() {
+	d.navValid = false
 	d.rows = nil
 	d.visualRows = nil
 	d.visualRowsW = -1
@@ -1434,6 +1444,7 @@ func (d *CommitDetailWidget) OwnsPointerCapture() bool {
 
 func (d *CommitDetailWidget) HandleEvent(ev tcell.Event) EventResult {
 	if newTop, consumed := d.scrollbar.HandleEvent(ev); consumed {
+		d.navValid = false
 		d.TopLine = newTop
 		if d.scrollbar.IsDragging() {
 			return EventCaptured
@@ -1483,6 +1494,7 @@ func (d *CommitDetailWidget) HandleEvent(ev tcell.Event) EventResult {
 		default:
 			return EventIgnored
 		}
+		d.navValid = false
 		d.clampScroll()
 		return EventConsumed
 	case *tcell.EventMouse:
@@ -1504,6 +1516,7 @@ func (d *CommitDetailWidget) HandleEvent(ev tcell.Event) EventResult {
 		default:
 			return d.handlePointer(event)
 		}
+		d.navValid = false
 		d.clampScroll()
 		return EventConsumed
 	}
@@ -1645,4 +1658,151 @@ func (d *CommitDetailWidget) updateHoveredGap(fileIndex int, overFile bool, mx, 
 
 func pointInCommitDetailRect(x, y int, rect Rect) bool {
 	return rect.W > 0 && rect.H > 0 && x >= rect.X && x < rect.X+rect.W && y >= rect.Y && y < rect.Y+rect.H
+}
+
+// Hunks lists every change block in the detail, in document order across all
+// files, including blocks inside collapsed files. A collapsed file keeps its
+// blocks listed so a jump can reveal it rather than skip its changes.
+func (d *CommitDetailWidget) Hunks() []DiffHunk {
+	var hunks []DiffHunk
+	for fileIndex, file := range d.Files {
+		v := d.fileView(&d.Files[fileIndex])
+		if v == nil {
+			continue
+		}
+		hunks = append(hunks, diffHunksInRows(v.Lines, file.Path, fileIndex)...)
+	}
+	return hunks
+}
+
+// HunkAt reports the 1-based index of the change block at or immediately
+// before the given file and row, and 0 when the position precedes the first
+// block of the first file.
+func (d *CommitDetailWidget) HunkAt(fileIndex, row int) int {
+	at := 0
+	for i, h := range d.Hunks() {
+		if h.FileIndex < fileIndex || (h.FileIndex == fileIndex && h.Row <= row) {
+			at = i + 1
+			continue
+		}
+		break
+	}
+	return at
+}
+
+// ensureVisualRows rebuilds the screen-row projection when no frame has done
+// it yet. Navigation can run from a plugin command before the next render, and
+// a stale projection would leave TopLine pointing at the wrong row.
+func (d *CommitDetailWidget) ensureVisualRows() {
+	w := d.layoutViewW
+	if w <= 0 {
+		w = max(d.GetRect().W, 0)
+	}
+	if w <= 0 || (d.visualRowsW == w && len(d.visualRows) > 0) {
+		return
+	}
+	d.visualRows = d.buildVisualRows(w)
+	d.visualRowsW = w
+	d.totalVisualRows = len(d.visualRows)
+}
+
+// viewportFileAndRow reports the file and diff row at the top of the
+// viewport. Commit Details has no single cursor across files, so the visible
+// position is the navigation position plugins and commands share.
+func (d *CommitDetailWidget) ViewportFileAndRow() (fileIndex, row int) {
+	if d.navValid && d.navFile >= 0 && d.navFile < len(d.Files) {
+		return d.navFile, d.navRow
+	}
+	d.ensureVisualRows()
+	// The sticky heading covers the top row, so the first row a reader can
+	// actually see is one below TopLine.
+	top := max(d.TopLine, 0)
+	bottom := min(top+d.viewH, len(d.visualRows))
+	for visualIndex := top + d.stickyRows(); visualIndex < bottom; visualIndex++ {
+		visual := d.visualRows[visualIndex]
+		if visual.row < 0 || visual.row >= len(d.rows) {
+			continue
+		}
+		r := d.rows[visual.row]
+		if r.kind == commitDetailDiffRow {
+			return r.fileIndex, d.diffRowAt(visual)
+		}
+	}
+	return 0, -1
+}
+
+// stickyRows reports how many screen rows the floating file heading covers.
+// Zero when the heading is not drawn, which is the case before the first frame.
+func (d *CommitDetailWidget) stickyRows() int {
+	if d.stickyRect.H > 0 {
+		return d.stickyRect.H
+	}
+	return 0
+}
+
+// diffRowAt converts a screen row into the diff row it shows. A wrapped line
+// occupies several screen rows that all point at the same diff row, so the
+// wrapped offset cannot be used as a diff row directly.
+func (d *CommitDetailWidget) diffRowAt(visual commitDetailVisualRow) int {
+	v := d.rowView(visual.row)
+	if v == nil {
+		return visual.offset
+	}
+	return v.EmbeddedDiffRowAt(visual.offset)
+}
+
+// GoToHunk reveals the file holding the 1-based change block index, moves
+// into that file's diff at the block's first row and scrolls it into view.
+func (d *CommitDetailWidget) GoToHunk(index int) error {
+	hunks := d.Hunks()
+	if index < 1 || index > len(hunks) {
+		return fmt.Errorf("hunk %d out of range (1-%d)", index, len(hunks))
+	}
+	target := hunks[index-1]
+	if target.FileIndex >= 0 && target.FileIndex < len(d.collapsedFiles) && d.collapsedFiles[target.FileIndex] {
+		d.collapsedFiles[target.FileIndex] = false
+		d.afterCollapseChange()
+	}
+	if v := d.fileView(&d.Files[target.FileIndex]); v != nil {
+		if err := v.GoToHunk(1 + indexInFile(hunks, index-1)); err != nil {
+			return err
+		}
+	}
+	d.navFile, d.navRow, d.navValid = target.FileIndex, target.Row, true
+	d.scrollToFileHunk(target.FileIndex, target.Row)
+	return nil
+}
+
+// indexInFile counts how many blocks precede flat in its own file, so the
+// per-file diff widget can address the same block with a local index.
+func indexInFile(hunks []DiffHunk, flat int) int {
+	fileIndex := hunks[flat].FileIndex
+	n := 0
+	for i := 0; i < flat; i++ {
+		if hunks[i].FileIndex == fileIndex {
+			n++
+		}
+	}
+	return n
+}
+
+func (d *CommitDetailWidget) scrollToFileHunk(fileIndex, row int) {
+	d.ensureVisualRows()
+	for visualIndex, visual := range d.visualRows {
+		if visual.row < 0 || visual.row >= len(d.rows) {
+			continue
+		}
+		r := d.rows[visual.row]
+		if r.kind != commitDetailDiffRow || r.fileIndex != fileIndex {
+			continue
+		}
+		if d.diffRowAt(visual) != row {
+			continue
+		}
+		// The target can need a sticky heading even when the previous frame did not.
+		top := max(visualIndex-1, 0)
+		d.TopLine = top
+		d.clampScroll()
+		return
+	}
 }
