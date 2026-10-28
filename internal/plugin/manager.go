@@ -685,17 +685,23 @@ func (m *Manager) ApplyUpdate(u *PluginUpdate) (*Plugin, bool, error) {
 		return &Plugin{Name: u.manifest.Name, Dir: u.dir, Repo: u.repo, RepoPath: u.repoPath, Manifest: u.manifest}, true, nil
 	}
 
-	if idx < 0 {
-		return nil, false, nil
-	}
-
-	old := m.plugins[idx]
 	// Grant before destroying the old plugin: a reduction that cannot be
 	// persisted must leave the running plugin alone.
 	granted, err := m.grant(regEntry, u.manifest.Permissions)
 	if err != nil {
 		return nil, false, err
 	}
+	if idx < 0 {
+		previousVersion := regEntry.Version
+		regEntry.Version = u.manifest.Version
+		if err := m.registry.Save(); err != nil {
+			regEntry.Version = previousVersion
+			return nil, false, err
+		}
+		return &Plugin{Name: u.name, Dir: u.dir, Repo: u.repo, RepoPath: u.repoPath, Manifest: u.manifest}, false, nil
+	}
+
+	old := m.plugins[idx]
 	old.Destroy()
 	p := &Plugin{
 		Name:     old.Name,
