@@ -41,21 +41,15 @@ yay -S ttt
 
 ### NixOS
 
-> **Note:** The flake tracks `main`. A future tagged release will ship a pinned flake; until then, install from `main`.
+Available in [nixpkgs](https://github.com/NixOS/nixpkgs):
+```nix
+environment.systemPackages = [ pkgs.ttt ];
+```
 
-Try it without installing:
+Or install directly from the repo flake (tracks the development branch):
 ```sh
 nix run github:eugenioenko/ttt
 ```
-
-Add to your `flake.nix` inputs:
-```nix
-{
-  inputs.ttt.url = "github:eugenioenko/ttt";
-}
-```
-
-Then add `inputs.ttt.packages.${system}.default` to your `environment.systemPackages` or home-manager packages.
 
 ### Quick Install Windows (scoop)
 ```sh
