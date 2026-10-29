@@ -4,10 +4,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/eugenioenko/ttt/internal/widgets"
 )
 
 func TestFilePickerEntriesOrdersDirectoriesAndFiles(t *testing.T) {
@@ -169,4 +172,62 @@ func benchmarkFilePickerEntriesStatBaseline(dir string) []filePickerEntry {
 	})
 
 	return out
+}
+
+func TestFilePickerSyncFromInputPreservesWhitespace(t *testing.T) {
+	t.Chdir(t.TempDir())
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("example.txt", nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, text := range []string{" example.txt", "example.txt ", "example.txt\t", " "} {
+		t.Run(text, func(t *testing.T) {
+			fp := &filePicker{list: widgets.NewListWidgetFromConfig(widgets.ListConfig{})}
+			fp.syncFromInput(text)
+
+			if fp.dir != dir || fp.filter != text {
+				t.Fatalf("directory, filter = %q, %q, want %q, %q", fp.dir, fp.filter, dir, text)
+			}
+			items := fp.list.Config.Items
+			if len(items) != 1 || items[0].ID != filepath.Dir(dir) {
+				t.Fatalf("filtered listing = %v, want only the parent directory", items)
+			}
+		})
+	}
+}
+
+func TestFilePickerSyncFromInputEntersWhitespaceDirectory(t *testing.T) {
+	for _, name := range []string{" folder", "folder "} {
+		t.Run(name, func(t *testing.T) {
+			if runtime.GOOS == "windows" && strings.HasSuffix(name, " ") {
+				t.Skip("Windows ordinary paths cannot distinguish filenames with trailing spaces")
+			}
+			t.Chdir(t.TempDir())
+			dir, err := os.Getwd()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range []string{"folder", name} {
+				if err := os.Mkdir(entry, 0755); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			fp := &filePicker{list: widgets.NewListWidgetFromConfig(widgets.ListConfig{})}
+			fp.syncFromInput(name)
+
+			want := filepath.Join(dir, name)
+			if fp.dir != want || fp.filter != "" {
+				t.Fatalf("directory, filter = %q, %q, want %q, empty filter", fp.dir, fp.filter, want)
+			}
+			items := fp.list.Config.Items
+			if len(items) != 1 || items[0].ID != dir {
+				t.Fatalf("directory listing = %v, want only the parent directory", items)
+			}
+		})
+	}
 }
